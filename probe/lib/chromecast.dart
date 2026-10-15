@@ -362,8 +362,22 @@ class AtvRemote {
         _appController.add(currentApp!);
       }
     }
-    if (_sub(m, 3) != null) log('Tv meldt een fout');
+    final err = _sub(m, 3);
+    if (err != null) log('Tv meldt een fout: ${_describeError(err)}');
     return active;
+  }
+
+  /// Leest RemoteError { value, message }: de tv stuurt het afgekeurde bericht terug.
+  String _describeError(Uint8List err) {
+    try {
+      final e = pbDecode(err);
+      final echoed = _sub(e, 2);
+      final fields = echoed == null ? <int>[] : pbDecode(echoed).keys.toList();
+      final hex = err.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      return 'veld(en) $fields, ruw $hex';
+    } catch (e) {
+      return 'onleesbaar ($e)';
+    }
   }
 
   void _send(Pb p) {
@@ -378,6 +392,7 @@ class AtvRemote {
   /// Start een app via pakketnaam (market://launch?id=...) of een eigen link.
   void launch(String packageOrLink) {
     final link = packageOrLink.contains(':') ? packageOrLink : 'market://launch?id=$packageOrLink';
+    log('App-link: $link');
     _send(Pb().msg(90, Pb().str(1, link)));
   }
 
