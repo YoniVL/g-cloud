@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'chromecast.dart';
+
 void main() => runApp(const ProbeApp());
 
 class ProbeApp extends StatelessWidget {
@@ -37,7 +39,7 @@ class _HomeState extends State<Home> {
   int tab = 0;
   @override
   Widget build(BuildContext context) {
-    const pages = [KeysPage(), HuePage(), SonosPage()];
+    const pages = [KeysPage(), HuePage(), SonosPage(), ChromecastPage()];
     return Scaffold(
       body: SafeArea(
         child: Column(children: [
@@ -61,6 +63,7 @@ class _HomeState extends State<Home> {
           NavigationDestination(icon: Icon(Icons.gamepad), label: 'Knoppen'),
           NavigationDestination(icon: Icon(Icons.lightbulb), label: 'Hue'),
           NavigationDestination(icon: Icon(Icons.speaker), label: 'Sonos'),
+          NavigationDestination(icon: Icon(Icons.tv), label: 'Chromecast'),
         ],
       ),
     );
@@ -304,4 +307,170 @@ class _SonosPageState extends State<SonosPage> {
           onChangeEnd: setVolume,
         ),
       ]);
+}
+
+
+// ---------------------------------------------------------------- Chromecast
+class ChromecastPage extends StatefulWidget {
+  const ChromecastPage({super.key});
+  @override
+  State<ChromecastPage> createState() => _ChromecastPageState();
+}
+
+class _ChromecastPageState extends State<ChromecastPage> {
+  final ip = TextEditingController();
+  final code = TextEditingController();
+  final pkg = TextEditingController();
+  AtvCredentials? creds;
+  AtvPairing? pairing;
+  AtvRemote? remote;
+  bool awaitingCode = false;
+  bool busy = false;
+  String app = '-';
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((p) {
+      ip.text = p.getString('atv_ip') ?? '';
+      final c = p.getString('atv_cert'), k = p.getString('atv_key');
+      if (c != null && k != null) creds = AtvCredentials(c, k);
+      setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    remote?.close();
+    pairing?.close();
+    super.dispose();
+  }
+
+  Future<void> run(String what, Future<void> Function() f) async {
+    setState(() => busy = true);
+    try {
+      await f();
+    } catch (e) {
+      log('Chromecast $what: FOUT $e');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> saveIp() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString('atv_ip', ip.text.trim());
+  }
+
+  Future<void> startPairing() => run('koppelen', () async {
+        await saveIp();
+        if (creds == null) {
+          log('Sleutel maken, dit duurt even...');
+          creds = await AtvCredentials.generate();
+          final p = await SharedPreferences.getInstance();
+          await p.setString('atv_cert', creds!.certPem);
+          await p.setString('atv_key', creds!.keyPem);
+        }
+        await pairing?.close();
+        pairing = AtvPairing(ip.text.trim(), creds!, (m) => log('Chromecast: $m'));
+        await pairing!.start();
+        setState(() => awaitingCode = true);
+      });
+
+  Future<void> finishPairing() => run('code', () async {
+        await pairing!.finish(code.text);
+        setState(() => awaitingCode = false);
+        code.clear();
+      });
+
+  Future<void> connect() => run('verbinden', () async {
+        await saveIp();
+        if (creds == null) throw StateError('Eerst koppelen');
+        await remote?.close();
+        final r = AtvRemote(ip.text.trim(), creds!, (m) => log('Chromecast: $m'));
+        await r.connect();
+        r.appChanges.listen((a) {
+          log('Chromecast actieve app: $a');
+          if (mounted) setState(() => app = a);
+        });
+        remote = r;
+        log('Chromecast verbonden');
+        setState(() {});
+      });
+
+  void key(int k, String name) {
+    try {
+      remote!.key(k);
+      log('Chromecast toets $name');
+    } catch (e) {
+      log('Chromecast toets $name: FOUT $e');
+    }
+  }
+
+  void launch(String target) {
+    try {
+      remote!.launch(target);
+      log('Chromecast start $target');
+    } catch (e) {
+      log('Chromecast start: FOUT $e');
+    }
+  }
+
+  Widget btn(String label, VoidCallback? onTap) =>
+      FilledButton.tonal(onPressed: onTap, child: Text(label));
+
+  @override
+  Widget build(BuildContext context) {
+    final on = remote?.connected ?? false;
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      Row(children: [
+        Expanded(
+            child: TextField(
+                controller: ip,
+                decoration: const InputDecoration(labelText: 'IP-adres van de Chromecast'))),
+        const SizedBox(width: 12),
+        btn(creds == null ? 'Koppel' : 'Opnieuw koppelen', busy ? null : startPairing),
+        const SizedBox(width: 8),
+        btn('Verbind', busy ? null : connect),
+      ]),
+      if (awaitingCode)
+        Row(children: [
+          Expanded(
+              child: TextField(
+                  controller: code,
+                  decoration: const InputDecoration(labelText: 'Code van de tv (6 tekens)'))),
+          const SizedBox(width: 12),
+          btn('Bevestig', busy ? null : finishPairing),
+        ]),
+      const SizedBox(height: 8),
+      Text(on ? 'Verbonden. Actieve app: $app' : 'Niet verbonden'),
+      const SizedBox(height: 12),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        btn('Omhoog', on ? () => key(AtvKey.up, 'omhoog') : null),
+        btn('Omlaag', on ? () => key(AtvKey.down, 'omlaag') : null),
+        btn('Links', on ? () => key(AtvKey.left, 'links') : null),
+        btn('Rechts', on ? () => key(AtvKey.right, 'rechts') : null),
+        btn('OK', on ? () => key(AtvKey.center, 'ok') : null),
+        btn('Terug', on ? () => key(AtvKey.back, 'terug') : null),
+        btn('Home', on ? () => key(AtvKey.home, 'home') : null),
+        btn('Play/pauze', on ? () => key(AtvKey.playPause, 'play/pauze') : null),
+        btn('Aan/uit', on ? () => key(AtvKey.power, 'aan/uit') : null),
+      ]),
+      const SizedBox(height: 16),
+      Row(children: [
+        Expanded(
+            child: TextField(
+                controller: pkg,
+                decoration: const InputDecoration(labelText: 'Pakketnaam of link van een app'))),
+        const SizedBox(width: 12),
+        btn('Start', on ? () => launch(pkg.text.trim()) : null),
+      ]),
+      const SizedBox(height: 8),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        btn('YouTube', on ? () => launch('com.google.android.youtube.tv') : null),
+        btn('Prime Video', on ? () => launch('com.amazon.amazonvideo.livingroom') : null),
+        btn('Netflix', on ? () => launch('com.netflix.ninja') : null),
+      ]),
+    ]);
+  }
 }
