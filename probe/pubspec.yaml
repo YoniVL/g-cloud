@@ -1,0 +1,15 @@
+name: gcloud_probe
+description: Testproject om Hue, Sonos en de G-knop van de Logitech G Cloud te proberen.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.2.0
+
+flutter:
+  uses-material-design: true
